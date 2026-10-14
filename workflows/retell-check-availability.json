@@ -1,0 +1,103 @@
+{
+  "name": "Retell - Check Availability",
+  "nodes": [
+    {
+      "name": "Retell Check Availability",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [200, 300],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "retell-check-availability",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "name": "Normalize Request",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [440, 300],
+      "parameters": {
+        "mode": "manual",
+        "includeOtherFields": false,
+        "assignments": {
+          "assignments": [
+            {
+              "id": "req-date",
+              "name": "date",
+              "value": "={{ $json.body?.args?.date ?? $json.body?.date ?? $json.date ?? \"\" }}",
+              "type": "string"
+            },
+            {
+              "id": "req-tz",
+              "name": "timezone",
+              "value": "America/Chicago",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "name": "Get Booked Events",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.3,
+      "position": [680, 300],
+      "alwaysOutputData": true,
+      "parameters": {
+        "resource": "event",
+        "operation": "getAll",
+        "calendar": {
+          "__rl": true,
+          "mode": "id",
+          "value": "YOUR_CALENDAR_ID@gmail.com"
+        },
+        "returnAll": true,
+        "timeMin": "={{ DateTime.fromISO($json.date, { zone: \"America/Chicago\" }).startOf(\"day\").toISO() }}",
+        "timeMax": "={{ DateTime.fromISO($json.date, { zone: \"America/Chicago\" }).endOf(\"day\").toISO() }}",
+        "options": {
+          "singleEvents": true,
+          "orderBy": "startTime"
+        }
+      }
+    },
+    {
+      "name": "Find Open Slots",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [920, 300],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const req = $('Normalize Request').first().json;\nconst tz = 'America/Chicago';\nconst day = DateTime.fromISO(req.date || '', { zone: tz });\nif (!day.isValid) {\n  return [{ json: { available_slots: [], result: 'I could not read that date. Ask the caller which day they want, then try again.' } }];\n}\nconst events = $input.all().map(i => i.json).filter(e => e && e.start && e.status !== 'cancelled');\nconst allDayBlocked = events.some(e => e.start.date && !e.start.dateTime);\nconst busy = events.filter(e => e.start.dateTime && e.end && e.end.dateTime).map(e => ({ s: DateTime.fromISO(e.start.dateTime), e: DateTime.fromISO(e.end.dateTime) }));\nconst now = DateTime.now().setZone(tz);\nconst slotMinutes = 30;\nconst open = day.set({ hour: 9, minute: 0, second: 0, millisecond: 0 });\nconst close = day.set({ hour: 17, minute: 0, second: 0, millisecond: 0 });\nconst slots = [];\nconst isWeekday = day.weekday <= 5;\nif (isWeekday && !allDayBlocked) {\n  for (let s = open; s.plus({ minutes: slotMinutes }) <= close; s = s.plus({ minutes: slotMinutes })) {\n    const e = s.plus({ minutes: slotMinutes });\n    if (s <= now) continue;\n    if (busy.some(b => s < b.e && e > b.s)) continue;\n    slots.push({ start_time: s.toISO({ suppressMilliseconds: true }), label: s.toFormat('h:mm a') });\n  }\n}\nconst dayLabel = day.toFormat('cccc, LLLL d');\nconst result = slots.length\n  ? 'Open 30-minute start times on ' + dayLabel + ' (Central Time): ' + slots.map(x => x.label).join(', ') + '. Offer two or three of these, spread out. Use the matching start_time when booking.'\n  : 'No openings on ' + dayLabel + '. Offer the caller another weekday.';\nreturn [{ json: { date: req.date, timezone: tz, available_slots: slots, result } }];"
+      }
+    },
+    {
+      "name": "Send Slots to Retell",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [1160, 300],
+      "parameters": {
+        "respondWith": "firstIncomingItem",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Retell Check Availability": {
+      "main": [[{ "node": "Normalize Request", "type": "main", "index": 0 }]]
+    },
+    "Normalize Request": {
+      "main": [[{ "node": "Get Booked Events", "type": "main", "index": 0 }]]
+    },
+    "Get Booked Events": {
+      "main": [[{ "node": "Find Open Slots", "type": "main", "index": 0 }]]
+    },
+    "Find Open Slots": {
+      "main": [[{ "node": "Send Slots to Retell", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": { "executionOrder": "v1" }
+}

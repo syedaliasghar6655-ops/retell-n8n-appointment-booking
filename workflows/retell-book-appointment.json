@@ -1,0 +1,191 @@
+{
+  "name": "Retell - Book Appointment",
+  "nodes": [
+    {
+      "name": "Retell Book Appointment",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [200, 300],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "retell-book-appointment",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "name": "Normalize Booking",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [440, 300],
+      "parameters": {
+        "mode": "manual",
+        "includeOtherFields": false,
+        "assignments": {
+          "assignments": [
+            {
+              "id": "b-name",
+              "name": "name",
+              "value": "={{ $json.body?.args?.name ?? $json.body?.name ?? \"Unknown caller\" }}",
+              "type": "string"
+            },
+            {
+              "id": "b-phone",
+              "name": "phone",
+              "value": "={{ $json.body?.args?.phone || $json.body?.call?.from_number || $json.body?.phone || \"\" }}",
+              "type": "string"
+            },
+            {
+              "id": "b-service",
+              "name": "service",
+              "value": "={{ $json.body?.args?.service ?? $json.body?.service ?? \"Consultation\" }}",
+              "type": "string"
+            },
+            {
+              "id": "b-start",
+              "name": "start_time",
+              "value": "={{ DateTime.fromISO($json.body?.args?.start_time ?? $json.body?.start_time ?? \"\", { zone: \"America/Chicago\" }).toISO({ suppressMilliseconds: true }) }}",
+              "type": "string"
+            },
+            {
+              "id": "b-end",
+              "name": "end_time",
+              "value": "={{ DateTime.fromISO($json.body?.args?.start_time ?? $json.body?.start_time ?? \"\", { zone: \"America/Chicago\" }).plus({ minutes: 30 }).toISO({ suppressMilliseconds: true }) }}",
+              "type": "string"
+            },
+            {
+              "id": "b-label",
+              "name": "time_label",
+              "value": "={{ DateTime.fromISO($json.body?.args?.start_time ?? $json.body?.start_time ?? \"\", { zone: \"America/Chicago\" }).toFormat(\"cccc, LLLL d 'at' h:mm a\") }} Central",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "name": "Create Calendar Event",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.3,
+      "position": [680, 300],
+      "onError": "continueErrorOutput",
+      "parameters": {
+        "resource": "event",
+        "operation": "create",
+        "calendar": {
+          "__rl": true,
+          "mode": "id",
+          "value": "YOUR_CALENDAR_ID@gmail.com"
+        },
+        "start": "={{ $json.start_time }}",
+        "end": "={{ $json.end_time }}",
+        "useDefaultReminders": true,
+        "additionalFields": {
+          "summary": "={{ $json.service }} - {{ $json.name }}",
+          "description": "=Booked by AI receptionist.\nCaller: {{ $json.name }}\nPhone: {{ $json.phone }}\nService: {{ $json.service }}"
+        }
+      }
+    },
+    {
+      "name": "Report Booking Failure",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [940, 600],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "{ \"status\": \"failed\", \"result\": \"The booking did not go through. Apologize, take the caller name and number, and tell them the clinic will call back to confirm a time.\" }",
+        "options": {}
+      }
+    },
+    {
+      "name": "Log to Call Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [940, 160],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "resource": "sheet",
+        "operation": "append",
+        "authentication": "oAuth2",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "YOUR_GOOGLE_SHEET_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "id",
+          "value": "0"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Timestamp": "={{ $now.setZone(\"America/Chicago\").toFormat(\"yyyy-LL-dd HH:mm\") }}",
+            "Name": "={{ $(\"Normalize Booking\").item.json.name }}",
+            "Phone": "={{ $(\"Normalize Booking\").item.json.phone }}",
+            "Service": "={{ $(\"Normalize Booking\").item.json.service }}",
+            "Appointment Time": "={{ $(\"Normalize Booking\").item.json.time_label }}",
+            "Status": "Booked"
+          },
+          "schema": [
+            { "id": "Timestamp", "displayName": "Timestamp", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": true },
+            { "id": "Name", "displayName": "Name", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": true },
+            { "id": "Phone", "displayName": "Phone", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": true },
+            { "id": "Service", "displayName": "Service", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": true },
+            { "id": "Appointment Time", "displayName": "Appointment Time", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": true },
+            { "id": "Status", "displayName": "Status", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": true }
+          ]
+        },
+        "options": { "cellFormat": "RAW" }
+      }
+    },
+    {
+      "name": "Email Clinic Owner",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [940, 300],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "authentication": "oAuth2",
+        "sendTo": "owner@example.com",
+        "subject": "=New booking: {{ $(\"Normalize Booking\").item.json.service }} - {{ $(\"Normalize Booking\").item.json.name }}",
+        "emailType": "text",
+        "message": "=The AI receptionist just booked an appointment.\n\nName: {{ $(\"Normalize Booking\").item.json.name }}\nPhone: {{ $(\"Normalize Booking\").item.json.phone }}\nService: {{ $(\"Normalize Booking\").item.json.service }}\nTime: {{ $(\"Normalize Booking\").item.json.time_label }}\n\nIt is on your calendar and logged in the Call Log sheet.",
+        "options": { "appendAttribution": false }
+      }
+    },
+    {
+      "name": "Confirm Booking to Retell",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [940, 440],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: \"booked\", result: \"Booked \" + $(\"Normalize Booking\").item.json.service + \" for \" + $(\"Normalize Booking\").item.json.name + \" on \" + $(\"Normalize Booking\").item.json.time_label + \". Confirm this to the caller.\" }) }}",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Retell Book Appointment": {
+      "main": [[{ "node": "Normalize Booking", "type": "main", "index": 0 }]]
+    },
+    "Normalize Booking": {
+      "main": [[{ "node": "Create Calendar Event", "type": "main", "index": 0 }]]
+    },
+    "Create Calendar Event": {
+      "main": [
+        [
+          { "node": "Log to Call Sheet", "type": "main", "index": 0 },
+          { "node": "Email Clinic Owner", "type": "main", "index": 0 },
+          { "node": "Confirm Booking to Retell", "type": "main", "index": 0 }
+        ],
+        [{ "node": "Report Booking Failure", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": { "executionOrder": "v1" }
+}
